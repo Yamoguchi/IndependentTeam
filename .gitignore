@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.runtime/
+.private/
+.state/
+.env
+team.json
+team.*.json
+*.pem
+*.sig
+.DS_Store
+logs/
+
+# JiuwenSwarm runtime file operation logs
+.agent_history/
