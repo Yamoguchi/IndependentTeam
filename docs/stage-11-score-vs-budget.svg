@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 340" role="img" aria-label="Score vs Budget, контролируемый HTTP-двойник">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#20252b">
+<text x="520" y="25" text-anchor="middle" font-size="17">Score vs Budget · HTTP-двойник</text>
+<text x="266.0" y="47" text-anchor="middle">Смешанный (10)</text>
+<text transform="translate(24 165.0) rotate(-90)" text-anchor="middle">Локальные баллы</text>
+<path d="M68 273.0h396 M68.0 57v216" stroke="#e0e4e8"/>
+<text x="59" y="277.0" text-anchor="end">0</text>
+<text x="68.0" y="291" text-anchor="middle">0</text>
+<path d="M68 219.0h396 M167.0 57v216" stroke="#e0e4e8"/>
+<text x="59" y="223.0" text-anchor="end">14</text>
+<text x="167.0" y="291" text-anchor="middle">510</text>
+<path d="M68 165.0h396 M266.0 57v216" stroke="#e0e4e8"/>
+<text x="59" y="169.0" text-anchor="end">28</text>
+<text x="266.0" y="291" text-anchor="middle">1,019</text>
+<path d="M68 111.0h396 M365.0 57v216" stroke="#e0e4e8"/>
+<text x="59" y="115.0" text-anchor="end">42</text>
+<text x="365.0" y="291" text-anchor="middle">1,529</text>
+<path d="M68 57.0h396 M464.0 57v216" stroke="#e0e4e8"/>
+<text x="59" y="61.0" text-anchor="end">56</text>
+<text x="464.0" y="291" text-anchor="middle">2,038</text>
+<text x="266.0" y="313" text-anchor="middle">Фактический расход, вых. экв.</text>
+<polyline points="68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0" fill="none" stroke="#2364aa" stroke-width="2"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="68.0" cy="273.0" r="4" fill="none" stroke="#2364aa"/>
+<text x="193" y="334" fill="#2364aa">F</text>
+<polyline points="68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0" fill="none" stroke="#bf4e18" stroke-width="2"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="68.0" cy="273.0" r="6" fill="none" stroke="#bf4e18"/>
+<text x="241" y="334" fill="#bf4e18">G</text>
+<polyline points="68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0 68.0,273.0" fill="none" stroke="#388354" stroke-width="2"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="68.0" cy="273.0" r="8" fill="none" stroke="#388354"/>
+<text x="289" y="334" fill="#388354">A</text>
+<text x="776.0" y="47" text-anchor="middle">Сохранённый (100)</text>
+<text transform="translate(534 165.0) rotate(-90)" text-anchor="middle">Локальные баллы</text>
+<path d="M578 273.0h396 M578.0 57v216" stroke="#e0e4e8"/>
+<text x="569" y="277.0" text-anchor="end">0</text>
+<text x="578.0" y="291" text-anchor="middle">0</text>
+<path d="M578 219.0h396 M677.0 57v216" stroke="#e0e4e8"/>
+<text x="569" y="223.0" text-anchor="end">60.5</text>
+<text x="677.0" y="291" text-anchor="middle">8,437</text>
+<path d="M578 165.0h396 M776.0 57v216" stroke="#e0e4e8"/>
+<text x="569" y="169.0" text-anchor="end">121</text>
+<text x="776.0" y="291" text-anchor="middle">16,875</text>
+<path d="M578 111.0h396 M875.0 57v216" stroke="#e0e4e8"/>
+<text x="569" y="115.0" text-anchor="end">181.5</text>
+<text x="875.0" y="291" text-anchor="middle">25,312</text>
+<path d="M578 57.0h396 M974.0 57v216" stroke="#e0e4e8"/>
+<text x="569" y="61.0" text-anchor="end">242</text>
+<text x="974.0" y="291" text-anchor="middle">33,749</text>
+<text x="776.0" y="313" text-anchor="middle">Фактический расход, вых. экв.</text>
+<polyline points="590.5,246.2 650.1,198.9 748.6,114.1 846.9,87.3 906.4,71.3 946.1,62.4" fill="none" stroke="#2364aa" stroke-width="2"/>
+<circle cx="590.5" cy="246.2" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="650.1" cy="198.9" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="748.6" cy="114.1" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="846.9" cy="87.3" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="906.4" cy="71.3" r="4" fill="none" stroke="#2364aa"/>
+<circle cx="946.1" cy="62.4" r="4" fill="none" stroke="#2364aa"/>
+<text x="703" y="334" fill="#2364aa">F</text>
+<polyline points="591.4,246.2 650.4,200.7 748.5,115.9 847.6,90.9 905.7,76.6 946.6,66.8" fill="none" stroke="#bf4e18" stroke-width="2"/>
+<circle cx="591.4" cy="246.2" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="650.4" cy="200.7" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="748.5" cy="115.9" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="847.6" cy="90.9" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="905.7" cy="76.6" r="6" fill="none" stroke="#bf4e18"/>
+<circle cx="946.6" cy="66.8" r="6" fill="none" stroke="#bf4e18"/>
+<text x="751" y="334" fill="#bf4e18">G</text>
+<polyline points="591.6,269.4 651.1,248.0 749.9,182.9 848.1,80.2 907.5,62.4 922.4,57.0" fill="none" stroke="#388354" stroke-width="2"/>
+<circle cx="591.6" cy="269.4" r="8" fill="none" stroke="#388354"/>
+<circle cx="651.1" cy="248.0" r="8" fill="none" stroke="#388354"/>
+<circle cx="749.9" cy="182.9" r="8" fill="none" stroke="#388354"/>
+<circle cx="848.1" cy="80.2" r="8" fill="none" stroke="#388354"/>
+<circle cx="907.5" cy="62.4" r="8" fill="none" stroke="#388354"/>
+<circle cx="922.4" cy="57.0" r="8" fill="none" stroke="#388354"/>
+<text x="799" y="334" fill="#388354">E1</text>
+</g></svg>

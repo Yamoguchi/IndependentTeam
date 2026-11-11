@@ -1,0 +1,1 @@
+"""TechArena openJiuwen registration client."""

@@ -1,6 +1,8 @@
 *
 !Dockerfile
 !requirements.txt
+!requirements-linux.txt
 !run_agent.py
-!task_sandbox.py
-!benchmark.py
+!contest_harness/
+!contest_harness/**/*.py
+contest_harness/evaluation/

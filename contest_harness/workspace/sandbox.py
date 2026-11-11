@@ -11,77 +11,120 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from threading import Thread
 
 TIMEOUT = 15
 OUTPUT_LIMIT = 8192
+EXTENDED_OUTPUT_LIMIT = 2 * 1024 * 1024
 CONTROL_FILES = {"task.json", "answer.txt"}
 
 
-def run_python(workspace: Path, code: str) -> str:
-    if sys.platform not in {"linux", "darwin"}:
-        return "Python execution requires Linux or macOS."
+def _python_command(scratch: Path) -> list[str]:
+    script = str(Path(__file__).resolve())
+    if sys.platform != "darwin":
+        return [sys.executable, "-IBS", script]
 
-    def ignored(directory, names):
-        return {
-            name
-            for name in names
-            if name in CONTROL_FILES
-            or (Path(directory) / name).is_symlink()
-            or not (
-                (Path(directory) / name).is_file() or (Path(directory) / name).is_dir()
-            )
-        }
-
-    # Some bind-mounted filesystems fail Landlock checks even with an allow rule.
-    with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryFile() as output:
-        scratch = Path(temporary).resolve() / "workspace"
-        shutil.copytree(workspace, scratch, ignore=ignored)
-        command = [sys.executable, "-IBS", str(Path(__file__).resolve())]
-        if sys.platform == "darwin":
-            executable = Path(sys.executable).resolve()
-            readable = (
-                scratch,
-                Path(sys.base_prefix).resolve(),
-                Path("/System/Library"),
-                Path("/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"),
-                Path("/usr/lib"),
-            )
-            subpaths = " ".join(
-                f"(subpath {json.dumps(str(path))})" for path in readable
-            )
-            script = json.dumps(command[-1])
-            profile = f"""(version 1)
+    executable = Path(sys.executable).resolve()
+    readable = (
+        scratch,
+        Path(sys.base_prefix).resolve(),
+        Path("/System/Library"),
+        Path("/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"),
+        Path("/usr/lib"),
+    )
+    subpaths = " ".join(f"(subpath {json.dumps(str(path))})" for path in readable)
+    profile = f"""(version 1)
 (deny default)
 (import "system.sb")
 (allow sysctl-read)
 (allow file-read-metadata)
 (deny file-write* network* process-fork)
-(allow file-read* {subpaths} (literal {script}))
+(allow file-read* {subpaths} (literal {json.dumps(script)}))
 (allow file-map-executable {subpaths})
 (allow process-exec (literal {json.dumps(str(executable))}))
 """
-            command = [
-                "/usr/bin/sandbox-exec",
-                "-p",
-                profile,
-                str(executable),
-                *command[1:],
-            ]
-        try:
-            result = subprocess.run(
-                command,
-                cwd=scratch,
-                env={"LANG": "C.UTF-8"},
-                input=code.encode(),
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                timeout=TIMEOUT,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return f"Python exceeded the {TIMEOUT}s time limit."
-        output.seek(0)
-        data = output.read(OUTPUT_LIMIT + 1)
+    return ["/usr/bin/sandbox-exec", "-p", profile, str(executable), "-IBS", script]
+
+
+def _capture_output(command, scratch, code):
+    """Capture the complete output of successful executions within the hard quota."""
+    captured = bytearray()
+    exceeded = False
+
+    with tempfile.TemporaryFile(dir="/tmp") as source:
+        source.write(code.encode())
+        source.seek(0)
+        with subprocess.Popen(
+            command, cwd=scratch, env={"LANG": "C.UTF-8"}, stdin=source,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        ) as process:
+            def drain():
+                nonlocal exceeded
+                while chunk := process.stdout.read1(8192):
+                    room = EXTENDED_OUTPUT_LIMIT - len(captured)
+                    captured.extend(chunk[:room])
+                    if len(chunk) > room:
+                        exceeded = True
+                        process.kill()
+                        break
+
+            reader = Thread(target=drain)
+            reader.start()
+            try:
+                process.wait(timeout=TIMEOUT)
+                status = f"Exit code {process.returncode}"
+            except subprocess.TimeoutExpired:
+                status = f"Python exceeded the {TIMEOUT}s time limit."
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                reader.join()
+    if exceeded:
+        status = f"Python exceeded the {EXTENDED_OUTPUT_LIMIT}-byte output limit. Reduce the output and retry."
+    return f"{status}\n" + captured.decode(errors="replace")
+
+
+def run_python(workspace: Path, code: str, *, extended: bool = False) -> str:
+    if sys.platform not in {"linux", "darwin"}:
+        return "Python execution requires Linux or macOS."
+
+    def ignored_entries(directory, names):
+        parent = Path(directory)
+        ignored = set()
+        for name in names:
+            path = parent / name
+            if (
+                name in CONTROL_FILES
+                or path.is_symlink()
+                or not (path.is_file() or path.is_dir())
+            ):
+                ignored.add(name)
+        return ignored
+
+    # Some bind-mounted filesystems fail Landlock checks even with an allow rule.
+    with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+        scratch = Path(temporary).resolve() / "workspace"
+        shutil.copytree(workspace, scratch, ignore=ignored_entries)
+        command = _python_command(scratch)
+        if extended:
+            return _capture_output(command, scratch, code)
+        with tempfile.TemporaryFile(dir="/tmp") as output:
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=scratch,
+                    env={"LANG": "C.UTF-8"},
+                    input=code.encode(),
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    timeout=TIMEOUT,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return f"Python exceeded the {TIMEOUT}s time limit."
+            output.seek(0)
+            data = output.read(OUTPUT_LIMIT + 1)
 
     suffix = "\n[output truncated]" if len(data) > OUTPUT_LIMIT else ""
     return f"Exit code {result.returncode}\n{data[:OUTPUT_LIMIT].decode(errors='replace')}{suffix}"

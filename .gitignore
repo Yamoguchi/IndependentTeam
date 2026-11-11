@@ -8,10 +8,12 @@ __pycache__/
 .env
 team.json
 team.*.json
+!examples/team.example.json
 *.pem
 *.sig
 .DS_Store
 logs/
+/task-dir/
 
 # JiuwenSwarm runtime file operation logs
 .agent_history/

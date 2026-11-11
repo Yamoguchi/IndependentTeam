@@ -1,0 +1,27 @@
+{
+  "team_name": "ЗАМЕНИТЕ: название команды",
+  "participants": [
+    {
+      "full_name": "ЗАМЕНИТЕ: ФИО первого участника",
+      "email": "person1@example.org",
+      "telegram": "@example_person1",
+      "phone": "+70000000001",
+      "university": "ЗАМЕНИТЕ: вуз",
+      "city": "ЗАМЕНИТЕ: город",
+      "citizenship": "ЗАМЕНИТЕ: гражданство"
+    },
+    {
+      "full_name": "ЗАМЕНИТЕ: ФИО второго участника",
+      "email": "person2@example.org",
+      "telegram": "@example_person2",
+      "phone": "+70000000002",
+      "university": "ЗАМЕНИТЕ: вуз",
+      "city": "ЗАМЕНИТЕ: город",
+      "citizenship": "ЗАМЕНИТЕ: гражданство"
+    }
+  ],
+  "consent": {
+    "accepted": false,
+    "text_version": "nsu-privacy-registration-v1"
+  }
+}
