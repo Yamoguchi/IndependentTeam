@@ -17,3 +17,8 @@ logs/
 
 # JiuwenSwarm runtime file operation logs
 .agent_history/
+
+# Local training corpora
+/task-dir-2/
+/openjiuwen_tasks_100_harder_agent/
+/openjiuwen_tasks_100_harder_agent.zip
