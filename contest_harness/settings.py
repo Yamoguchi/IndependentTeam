@@ -22,5 +22,5 @@ TOOL_STORE_BYTES = configured_int("TOOL_STORE_MIB", 64, 4, 128) * 1024 * 1024
 GENERATION_RECOVERIES = configured_int("GENERATION_RECOVERIES", 2, 0, 5)
 MIN_COST_SAMPLES = configured_int("MIN_COST_SAMPLES", 3, 1, 100)
 MIN_SUCCESS_SAMPLES = configured_int("MIN_SUCCESS_SAMPLES", 20, 10, 1000)
-MODES = ("baseline", "A", "B", "B+C", "B+C+D")
+MODES = ("baseline", "A", "B", "B+C", "B+C+D", "minimal")
 COMPACT_MODES = {"B+C", "B+C+D"}

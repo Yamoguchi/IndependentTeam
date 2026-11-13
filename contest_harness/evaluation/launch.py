@@ -167,6 +167,14 @@ def run(args):
         command.extend(["--cheap-steps", str(cheap_steps)])
     for entry in getattr(args, "generation_limit", ()):
         command.extend(["--generation-limit", entry])
+    solver_overrides = {
+        name: getattr(args, name, None)
+        for name in ("feature", "max_iterations", "repeat_limit", "sequence_limit", "cache_entries")
+    }
+    for name, value in solver_overrides.items():
+        if value is not None:
+            for entry in value if isinstance(value, list) else [value]:
+                command.extend(["--" + name.replace("_", "-"), str(entry)])
     journal.mkdir(exist_ok=False)  # Exclusive launch, including when two runners race.
     manifest["code"] = code_metadata()
     manifest["report_code"] = manifest["code"]
@@ -174,6 +182,7 @@ def run(args):
         "status": "running",
         "mode": "baseline" if args.local_budget is None else "local_budget",
         "agent_mode": mode,
+        "solver_overrides": solver_overrides if mode == "minimal" else None,
         "direct_publish": direct_publish,
         "routing": routing,
         "cascade": cascade,

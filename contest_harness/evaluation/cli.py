@@ -5,10 +5,12 @@ from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
+from contest_harness.agent.options import add_solver_options
 from contest_harness.evaluation.history import planning_history, report
 from contest_harness.evaluation.launch import run
 from contest_harness.evaluation.manifest import prepare
 from contest_harness.evaluation.scoring import check
+from contest_harness.settings import MODES
 from contest_harness.telemetry.usage import budget_tenths
 
 
@@ -40,12 +42,13 @@ def main():
         if operation != prepare:
             command.add_argument("--baseline", type=resolved)
         if operation == run:
-            command.add_argument("--mode", choices=("baseline", "A", "B", "B+C", "B+C+D"), default="baseline")
+            command.add_argument("--mode", choices=MODES, default="baseline")
             command.add_argument("--direct-publish", action="store_true")
             command.add_argument("--routing", action="store_true")
             command.add_argument("--cascade", action="store_true")
             command.add_argument("--routing-profile", type=resolved)
-            command.add_argument("--planner", choices=("control", "F"))
+            command.add_argument("--planner", choices=("control", "static", "F"))
+            add_solver_options(command)
             command.add_argument("--early-stop", action="store_true")
             command.add_argument("--sessions", type=int, choices=range(1, 6), default=1)
             command.add_argument("--run-timeout", type=positive_number)

@@ -84,6 +84,9 @@ class TracedModel(Model):
                 async with asyncio.timeout(timeout):
                     call.response = await super().invoke(request_messages, **kwargs)
                 if not policy:
+                    if call.wire_finish_reason == "length":
+                        call.generation_rejection = "length"
+                        raise GenerationFailed("Proxy truncated the completion.")
                     if call.response.tool_calls and call.wire_finish_reason not in {"stop", "tool_calls"}:
                         call.generation_rejection = "incomplete_tool_completion"
                         raise GenerationFailed("Proxy returned an incomplete tool completion.")

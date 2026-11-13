@@ -11,6 +11,7 @@ from openjiuwen.core.foundation.llm import AssistantMessage, BaseMessage, ToolMe
 from contest_harness.json_codec import canonical_json
 from contest_harness.settings import CONTEXT_STATE_BYTES, CONTEXT_WINDOW_BYTES, HISTORY_MESSAGES
 from contest_harness.telemetry.trace import RunTrace
+from contest_harness.workspace.output import OutputStoreFull
 
 WINDOW_BYTES = CONTEXT_WINDOW_BYTES
 STATE_BYTES = CONTEXT_STATE_BYTES
@@ -103,6 +104,17 @@ class TaskContext:
         self.results: dict[tuple, Observation] = {}
         self.observations: dict[int, Observation] = {}
         self.sequence = 0
+        self.outputs = None
+
+    def output_excerpt(self, output):
+        short = excerpt(output)
+        if short == output or self.outputs is None or re.search(r"\[Details out-\d+,", short):
+            return short
+        try:
+            handle, size, _ = self.outputs.remember(output)
+        except OutputStoreFull:
+            return short
+        return f"[Details {handle}, {size} UTF-8 bytes]\n{short}"
 
     def observe_response(self, message):
         if not isinstance(message, AssistantMessage) or not isinstance(message.content, str):
@@ -167,6 +179,8 @@ class TaskContext:
             "remaining_local_budget_tenths": self.remaining_tenths,
             "details": [],
         }
+        if self.outputs is not None and self.outputs.entries:
+            state["retained_outputs"] = "output_details with id=index and range=0:4096"
         if self.coding and self.revision and not self.checks:
             state["verification"] = (
                 "No Python check recorded after the latest edit. Rerun the supplied tests."
@@ -187,10 +201,12 @@ class TaskContext:
                 state["details"].pop()
 
         for item in self.priority_checks():
+            if self.outputs is not None and item.sequence in retained:
+                continue
             label = excerpt(item.path or item.arguments, 170)
             detail = {"check": item.tool, "command": label, "status": item.status}
             if item.sequence not in retained:
-                detail["output"] = excerpt(item.output)
+                detail["output"] = self.output_excerpt(item.output)
             add(detail)
 
         for path in reversed(self.modified):
@@ -204,7 +220,7 @@ class TaskContext:
                 or (item.tool == "write_file" and item.status == "ok")
             ):
                 continue
-            detail = {"tool": item.tool, "status": item.status, "output": excerpt(item.output)}
+            detail = {"tool": item.tool, "status": item.status, "output": self.output_excerpt(item.output)}
             if item.path:
                 detail["path"] = excerpt(item.path, 160)
             elif item.tool == "run_python":
@@ -253,6 +269,18 @@ class TaskContext:
             checks = {item.sequence: 1 if item.status == "ok" else 0 for item in self.checks.values()}
             selected = []
             remaining = WINDOW_BYTES - STATE_BYTES
+            if self.outputs is not None and eligible:
+                latest = eligible[-1]
+                group = groups[latest]
+                if group.size > remaining:
+                    # Keep the latest tool exchange paired so the solver can
+                    # continue from its result and recover the original output.
+                    messages = [
+                        message.model_copy(update={"content": self.output_excerpt(message.content)})
+                        if isinstance(message, ToolMessage) and isinstance(message.content, str) else message
+                        for message in group.messages
+                    ]
+                    groups[latest] = Exchange(messages, group.observations, message_bytes(messages))
             # Rank current checks first, then informative tool results, then other recent turns.
             for index in sorted(
                 eligible,

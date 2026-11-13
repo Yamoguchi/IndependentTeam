@@ -8,25 +8,28 @@ from pathlib import Path
 from contest_harness.agent.generation import GenerationPolicy, valid_arguments
 from contest_harness.planning.feasibility import SIGNALS
 from contest_harness.settings import COMPACT_MODES
-from contest_harness.workspace.output import ToolOutputs
+from contest_harness.workspace.actions import ToolActions
+from contest_harness.workspace.output import OutputStoreFull, ToolOutputs
 from contest_harness.workspace.paths import InvalidToolCall, safe_path
-from contest_harness.workspace.tools import use_tool
+from contest_harness.workspace.tools import python_retry_hint, use_tool
 
 
 async def run_attempt(
     model, task_dir, workspace, task, current, trace, mode, generation_limits, direct_publish, coding,
     answer_format, reference, definitions, system, query, progress, publish, calls_before, step_limit, capture_handoff,
-    recognize_signal=False,
+    recognize_signal=False, options=None,
 ):
     from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
     from openjiuwen.core.single_agent import AgentCard, ReActAgent, ReActAgentConfig
 
     from contest_harness.agent.rail import TaskRail
 
-    compact = mode in COMPACT_MODES
+    compact = mode in COMPACT_MODES if options is None else options.compact_output(task["task_type"])
+    context_enabled = (mode == "B" or compact) if options is None else options.features["context_management_enabled"]
+    actions = ToolActions(workspace, options, trace) if options is not None else None
     allowed = {item["name"]: set(item["input_params"]["required"]) for item in definitions}
     generation = None
-    if mode == "B+C+D":
+    if generation_limits is not None:
         from contest_harness.agent.model_profiles import PROFILES
 
         cap = PROFILES[model.model_config.model_name][0]
@@ -36,14 +39,14 @@ async def run_attempt(
         )
     state = None
     context_config = {}
-    if mode == "B" or compact or capture_handoff:
+    if context_enabled or capture_handoff:
         from openjiuwen.core.context_engine import ContextEngineConfig
 
         from contest_harness.agent.context import HISTORY_MESSAGES, TaskContext
 
         state = TaskContext(query, coding is not None, trace)
         progress.context = state
-        if mode == "B" or compact:
+        if context_enabled:
             context_config["context_engine_config"] = ContextEngineConfig(max_context_message_num=HISTORY_MESSAGES)
     outputs = None
 
@@ -59,11 +62,15 @@ async def run_attempt(
             return await publish(arguments["content"], "workspace")
         if name == "output_details" and outputs is not None:
             return outputs.details(arguments["id"], arguments["range"])
-        if name in {"run_python", "run_python_file"}:
-            output = await asyncio.to_thread(use_tool, name, arguments, workspace, coding, compact=compact)
-        else:
-            output = use_tool(name, arguments, workspace, coding, compact=compact)
-        if direct_publish and rail.single_tool_turn:
+        operation = partial(use_tool, name, arguments, workspace, coding, compact=compact, search_enabled=options is not None)
+
+        async def perform():
+            if name in {"run_python", "run_python_file"}:
+                return await asyncio.to_thread(operation)
+            return operation()
+
+        output = await actions.run(name, arguments, perform) if actions is not None else await perform()
+        if direct_publish and (rail.single_tool_turn or rail.final_edit_test):
             candidate = None
             if (coding and name == "run_python_file" and answer_format.kind == "literal"
                     and safe_path(workspace, arguments["path"]).relative_to(workspace) in coding.tests
@@ -76,8 +83,34 @@ async def run_attempt(
                 candidate = reference[0]
             if candidate is not None:
                 await publish(candidate, "direct")
+        if options is not None and not coding and name == "run_python" and output == "Exit code 0\n":
+            output += "Python completed without printing a result. Use print(...) to return computed values."
         if outputs is not None and name != "write_file":
-            return outputs.compact(name, output)
+            label = f"{name} {arguments.get('path', '')}".strip() if options is not None else None
+            delimiter = None
+            if compact and options is not None and task["task_type"] == "data_analysis" and name == "read_file":
+                delimiter = {".csv": ",", ".tsv": "\t"}.get(Path(arguments["path"]).suffix.lower())
+            try:
+                if compact:
+                    visible = outputs.compact(name, output, delimiter=delimiter, label=label)
+                else:
+                    visible = output
+                    outputs.remember(output, label=label)
+                if options is not None and name == "run_python":
+                    retry = python_retry_hint(arguments["code"], output, workspace)
+                    if retry:
+                        printed, hint = retry
+                        status, _, body = output.partition("\n")
+                        handle, size, _ = outputs.remember(body if compact else output, label=label)
+                        content = [printed.removesuffix("\n"), hint] if printed else [hint]
+                        recovery = "\n".join([status, f"[Details {handle}, {size} UTF-8 bytes]", *content])
+                        before, after = len(visible.encode("utf-8")), len(recovery.encode("utf-8"))
+                        if after < before:
+                            trace.tool_event("tool.python_retry_hint", raw_bytes=before, visible_bytes=after)
+                            return recovery
+                return visible
+            except OutputStoreFull:
+                trace.tool_event("tool.output_store_full", tool=name)
         return output
 
     agent = ReActAgent(AgentCard(name="contest_agent"))
@@ -93,16 +126,21 @@ async def run_attempt(
     if context_config:
         agent.context_engine.register_window_mutator(state.select_window)
     agent.set_llm(model)
-    rail = TaskRail(workspace, progress, trace, state, generation, allowed)
+    rail = TaskRail(
+        workspace, progress, trace, state, generation, allowed,
+        publish_edit_batches=bool(options is not None and direct_publish and coding and coding.declared),
+    )
     try:
         async with AsyncExitStack() as cleanup:
             cleanup.push_async_callback(agent.clear_session, agent.card.id)
             await agent.register_rail(rail)
             cleanup.push_async_callback(agent.unregister_rail, rail)
             cleanup.callback(agent.ability_manager.teardown_tools)
-            if compact:
+            if compact or options is not None and context_enabled:
                 outputs = ToolOutputs(trace)
                 cleanup.callback(outputs.close)
+                if options is not None and state is not None:
+                    state.outputs = outputs
             for definition in definitions:
                 card = ToolCard(**definition, parallel_safe=False)
                 agent.ability_manager.add_ability(

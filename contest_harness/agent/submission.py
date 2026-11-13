@@ -56,6 +56,9 @@ class AnswerPublisher:
         self.trace.emit(
             "answer.validated", source=source, accepted=accepted,
             format=asdict(format_check), semantic=asdict(semantic), format_kind=self.answer_format.kind,
+            format_valid=format_check.status == "confirmed",
+            verification=("SEMANTIC_VERIFIED" if semantic.status == "confirmed" else
+                          "UNVERIFIED" if semantic.status == "unverified" else "FAILED"),
         )
         if not accepted:
             reason = format_check.reason if format_check.status == "failed" else semantic.reason
@@ -69,5 +72,5 @@ class AnswerPublisher:
         self.current.published = True
         progress.submitted = True
         if self.trace.enabled:
-            self.trace.tool_event("answer.saved", source=source, answer=describe(answer_text))
+            self.trace.tool_event("answer.saved", source=source, status="SUBMITTED", answer=describe(answer_text))
         return "Answer saved."

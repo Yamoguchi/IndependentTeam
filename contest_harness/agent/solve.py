@@ -13,8 +13,8 @@ from contest_harness.agent.recovery import AttemptProgress, edit_state, handoff_
 from contest_harness.agent.submission import AnswerPublisher
 from contest_harness.planning.feasibility import SIGNAL_PROMPT
 from contest_harness.planning.forecast import request_allowance
-from contest_harness.planning.preflight import initial_steps
-from contest_harness.planning.routing import ESCALATION_PRIORS, Route
+from contest_harness.planning.preflight import initial_steps, single_model_route
+from contest_harness.planning.routing import ESCALATION_PRIORS, Route, features_for
 from contest_harness.settings import COMPACT_MODES, MAX_STEPS
 from contest_harness.telemetry.trace import RunTrace, TaskTrace, describe, error_fields
 from contest_harness.telemetry.usage import BudgetExceeded
@@ -30,7 +30,7 @@ from contest_harness.workspace.tools import run_python_file, toolset
 async def solve(
     model, task_dir: Path, task: dict, current: TaskTrace, trace: RunTrace, mode: str = "baseline",
     generation_limits=None, *, direct_publish=False, router=None, models=None, plan=None, use_planned_route=False,
-    recovery=None, retry_query=None,
+    recovery=None, retry_query=None, options=None,
 ) -> str:
     workspace = workspace_for(task_dir)
     trace.emit(
@@ -38,10 +38,10 @@ async def solve(
     )
 
     instruction = task["instruction"]
-    answer_format = AnswerFormat.infer(instruction)
-    reference = (plan.reference if plan and router and plan.preflight_error is None else
-                 compute_reference(instruction, workspace, answer_format.kind))
-    compact = mode in COMPACT_MODES
+    prepared = plan if plan and plan.answer_format and plan.preflight_error is None else None
+    answer_format = prepared.answer_format if prepared else AnswerFormat.infer(instruction)
+    reference = prepared.reference if prepared else compute_reference(instruction, workspace, answer_format.kind)
+    compact = mode in COMPACT_MODES if options is None else options.compact_output(task["task_type"])
 
     async def run_original_test(name):
         return await asyncio.to_thread(run_python_file, workspace, safe_path(workspace, name), compact=compact)
@@ -52,6 +52,27 @@ async def solve(
     if recovery is not None:
         recovery.coding = coding
     publisher = AnswerPublisher(task_dir, instruction, answer_format, coding, reference, current, trace)
+
+    if options is not None:
+        kind = task["task_type"]
+        active_route = prepared.route if prepared else single_model_route(
+            kind, model.model_config.model_name, features_for(task, workspace) if kind in {"math", "coding"} else {},
+            answer_format, reference, direct_publish,
+        )
+        trace.emit("route.selected", route=active_route.report(), **trace.budget_report())
+        progress = AttemptProgress()
+        if active_route.name == "LOCAL" and await publisher.publish(progress, reference[0], "local"):
+            return "submitted"
+        definitions, system = (
+            prepared.toolset if prepared and prepared.toolset else
+            toolset(kind, mode, features=active_route.features, options=options)
+        )
+        return await run_attempt(
+            model, task_dir, workspace, task, current, trace, mode, generation_limits, direct_publish, coding,
+            answer_format, reference, definitions, system, instruction, progress,
+            partial(publisher.publish, progress), current.usage.calls, options.steps(task["task_type"]), False,
+            options=options,
+        )
 
     route = (
         plan.route if use_planned_route and plan and plan.preflight_error is None else
@@ -147,7 +168,7 @@ async def solve(
 async def run_task(
     model, task_dir: Path, current: TaskTrace, trace: RunTrace, mode: str = "baseline",
     generation_limits=None, *, direct_publish=False, router=None, models=None, plan=None, use_planned_route=False,
-    recovery=None, retry_query=None,
+    recovery=None, retry_query=None, options=None,
 ) -> dict:
     started_at = monotonic()
     task = {}
@@ -165,7 +186,7 @@ async def run_task(
         status = await solve(
             model, task_dir, task, current, trace, mode, generation_limits,
             direct_publish=direct_publish, router=router, models=models,
-            plan=plan, use_planned_route=use_planned_route, recovery=recovery, retry_query=retry_query,
+            plan=plan, use_planned_route=use_planned_route, recovery=recovery, retry_query=retry_query, options=options,
         )
     except BudgetExceeded:
         status = "budget_exceeded"

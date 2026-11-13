@@ -1,6 +1,7 @@
 """Observe SDK model and tool calls and stop after a saved answer."""
 
 import json
+import re
 from time import monotonic
 
 from openjiuwen.core.foundation.llm import ToolMessage
@@ -17,10 +18,15 @@ from contest_harness.telemetry.trace import describe, error_fields
 from contest_harness.workspace.paths import safe_path
 from contest_harness.workspace.tools import tool_status
 
+PYTHON_ERRORS = {
+    "AttributeError", "FileNotFoundError", "ImportError", "IndexError", "KeyError", "ModuleNotFoundError",
+    "PermissionError", "SyntaxError", "TypeError", "ValueError", "ZeroDivisionError",
+}
+
 
 class TaskRail(AgentRail):
 
-    def __init__(self, workspace, progress, trace, state, generation, allowed):
+    def __init__(self, workspace, progress, trace, state, generation, allowed, *, publish_edit_batches=False):
         self.workspace = workspace
         self.progress = progress
         self.trace = trace
@@ -28,6 +34,13 @@ class TaskRail(AgentRail):
         self.generation = generation
         self.allowed = allowed
         self.single_tool_turn = False
+        self.publish_edit_batches = publish_edit_batches
+        self.edit_batch = ()
+        self.batch_completed = 0
+
+    @property
+    def final_edit_test(self):
+        return bool(self.edit_batch) and self.batch_completed == len(self.edit_batch) - 1
 
     def valid_tool_input(self, inputs):
         try:
@@ -38,8 +51,16 @@ class TaskRail(AgentRail):
 
     async def after_model_call(self, ctx: AgentCallbackContext):
         if isinstance(ctx.inputs, ModelCallInputs) and ctx.inputs.response is not None:
-            self.single_tool_turn = len(ctx.inputs.response.tool_calls or ()) == 1
-            for call in ctx.inputs.response.tool_calls or ():
+            calls = ctx.inputs.response.tool_calls or ()
+            self.single_tool_turn = len(calls) == 1
+            self.edit_batch = ()
+            self.batch_completed = 0
+            if (self.publish_edit_batches and len(calls) > 1 and calls[-1].name == "run_python_file"
+                    and all(call.name == "write_file" for call in calls[:-1])):
+                ids = tuple(call.id for call in calls)
+                if all(ids) and len(set(ids)) == len(ids):
+                    self.edit_batch = ids
+            for call in calls:
                 if call.name not in self.allowed:
                     self.trace.tool_event(
                         "tool.unavailable", tool=call.name, tool_call_id=call.id, reason="schema_not_offered",
@@ -51,6 +72,8 @@ class TaskRail(AgentRail):
         inputs = ctx.inputs
         if not isinstance(inputs, ToolCallInputs):
             return
+        if self.edit_batch and self.edit_batch[self.batch_completed:self.batch_completed + 1] != (inputs.tool_call.id,):
+            self.edit_batch = ()
         if self.trace.enabled:
             self.trace.tool_event(
                 "tool.started",
@@ -108,9 +131,18 @@ class TaskRail(AgentRail):
 
     def record_tool(self, ctx, status, output, **error):
         inputs = ctx.inputs
+        if self.edit_batch:
+            if status == "ok":
+                self.batch_completed += 1
+            else:
+                self.edit_batch = ()
         if self.generation is not None:
             self.generation.observe_tool(inputs.tool_name, status)
         if self.trace.enabled:
+            if status == "error" and output and inputs.tool_name in {"run_python", "run_python_file"}:
+                terminal = re.match(r"^(\w+):", output.rstrip().rsplit("\n", 1)[-1])
+                if terminal and terminal[1] in PYTHON_ERRORS:
+                    error["python_exception"] = terminal[1]
             self.trace.tool_event(
                 "tool.finished",
                 tool=inputs.tool_name,

@@ -6,7 +6,7 @@ from time import monotonic
 
 from contest_harness.planning.feasibility import SIGNAL_PROMPT, Resolution, check_prerequisites
 from contest_harness.planning.forecast import PlanningHistory, estimate_task, request_allowance, settings_for
-from contest_harness.planning.routing import Route, features_for
+from contest_harness.planning.routing import LOCAL_METHODS, Route, features_for
 from contest_harness.settings import MAX_STEPS, MIN_ADAPTIVE_OUTPUT
 from contest_harness.telemetry.trace import describe
 from contest_harness.workspace.answers import AnswerFormat
@@ -20,12 +20,21 @@ def initial_steps(router, route):
     return router.cheap_steps if route.smart and route.name in {"CHEAP_LLM", "CASCADE"} else MAX_STEPS
 
 
+def single_model_route(task_type, model_name, features, answer_format, reference, direct_publish):
+    if (direct_publish and reference and reference[1] in LOCAL_METHODS.get(task_type, ())
+            and answer_format.validate(reference[0])[1].status == "confirmed"):
+        return Route("LOCAL", None, "independent_reference", features)
+    return Route("BASELINE", model_name, "single_model", features)
+
+
 @dataclass
 class TaskPlan:
     directory: Path
     input_index: int
     task: dict | None = None
     route: Route | None = None
+    answer_format: AnswerFormat | None = None
+    toolset: tuple[list[dict], str] | None = None
     reference: tuple | None = None
     forecast: dict | None = None
     priority: float | None = None
@@ -59,7 +68,8 @@ class TaskPlan:
         }
 
 
-def prepare_plan(tasks, model_name, trace, mode, generation_limits, direct_publish, router, planner, history, early_stop=False):
+def prepare_plan(tasks, model_name, trace, mode, generation_limits, direct_publish, router, planner, history,
+                 early_stop=False, *, options=None):
     from contest_harness.agent.model_profiles import PROFILES
 
     started = monotonic()
@@ -83,7 +93,7 @@ def prepare_plan(tasks, model_name, trace, mode, generation_limits, direct_publi
         try:
             workspace = workspace_for(plan.directory)
             instruction, kind = plan.task["instruction"], plan.task["task_type"]
-            if early_stop:
+            if early_stop or planner == "static":
                 checked_at = monotonic()
                 plan.prerequisite_stop = check_prerequisites(instruction, workspace)
                 plan.recognition_ms = round((monotonic() - checked_at) * 1000, 3)
@@ -91,24 +101,35 @@ def prepare_plan(tasks, model_name, trace, mode, generation_limits, direct_publi
                            duration_ms=plan.recognition_ms)
                 if plan.prerequisite_stop:
                     continue
-            if router:
-                answer_format = AnswerFormat.infer(instruction)
-                plan.reference = compute_reference(instruction, workspace, answer_format.kind)
+            if options is not None:
+                features = features_for(plan.task, workspace)
+                plan.answer_format = AnswerFormat.infer(instruction)
+                plan.reference = compute_reference(instruction, workspace, plan.answer_format.kind)
+                plan.reference_method = plan.reference[1] if plan.reference else None
+                route = single_model_route(
+                    kind, model_name, features, plan.answer_format, plan.reference, direct_publish,
+                )
+            elif router:
+                plan.answer_format = AnswerFormat.infer(instruction)
+                plan.reference = compute_reference(instruction, workspace, plan.answer_format.kind)
                 plan.reference_method = plan.reference[1] if plan.reference else None
                 route = router.select(plan.task, workspace, plan.reference, remaining)
-                if route.name == "LOCAL" and answer_format.validate(plan.reference[0])[1].status != "confirmed":
+                if route.name == "LOCAL" and plan.answer_format.validate(plan.reference[0])[1].status != "confirmed":
                     route = router.select(plan.task, workspace, None, remaining)
             else:
                 route = Route("BASELINE", model_name, "control", features_for(plan.task, workspace))
             plan.route = route
             settings = settings_for(
-                mode, generation_limits, direct_publish, initial_steps(router, route),
+                mode, generation_limits, direct_publish,
+                options.steps(kind) if options is not None else initial_steps(router, route),
                 router.penalty if route.name == "CASCADE" else None,
             )
             first_reserve = input_bytes = 0
             reasoning = False
             if route.model is not None:
-                definitions, system = toolset(kind, mode, route.name, route.features)
+                definitions, system = toolset(kind, mode, route.name, route.features, options=options)
+                if options is not None:
+                    plan.toolset = definitions, system
                 if early_stop:
                     system += SIGNAL_PROMPT
                 profile = PROFILES[route.model]
@@ -135,9 +156,10 @@ def prepare_plan(tasks, model_name, trace, mode, generation_limits, direct_publi
         finally:
             plan.preflight_ms = round((monotonic() - task_started) * 1000, 3)
     original_order = [plan.task_id for plan in plans]
-    if planner == "F":
+    if planner in {"F", "static"}:
         plans.sort(key=lambda plan: (
-            plan.prerequisite_stop is None, plan.priority is None, -(plan.priority or 0), plan.input_index,
+            (plan.prerequisite_stop is None) if planner == "F" else (plan.prerequisite_stop is not None),
+            plan.priority is None, -(plan.priority or 0), plan.input_index,
         ))
     for index, plan in enumerate(plans, 1):
         trace.emit("planning.task", planned_index=index, **plan.report())

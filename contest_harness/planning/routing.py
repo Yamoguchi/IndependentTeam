@@ -89,6 +89,7 @@ def features_for(task, workspace):
     count = 0
     total_bytes = 0
     suffixes = set()
+    paths = []
     sources = 0
     scanned = 0
     for parent, dirs, files in os.walk(workspace):
@@ -101,11 +102,19 @@ def features_for(task, workspace):
                 continue
             total_bytes += path.stat().st_size
             suffixes.add(path.suffix[:20])
-            sources += path.suffix in SOURCE_TYPES and not test_file(path.relative_to(workspace))
+            relative = path.relative_to(workspace)
+            sources += path.suffix in SOURCE_TYPES and not test_file(relative)
+            paths.append(relative.as_posix())
             count += 1
         if scanned >= SCAN_LIMIT:
             break
     instruction = task["instruction"]
+    paths_named = bool(
+        task["task_type"] == "coding" and paths and scanned < SCAN_LIMIT
+        and not re.search(r"\b(?:list|enumerate|inspect|scan)\b[^.!?\n]{0,50}\b(?:directories|directory|files|contents)\b",
+                          instruction, re.I)
+        and all(re.search(rf"(?<![-\w./])(?:\./)?{re.escape(path)}(?![-\w/]|\.[\w/])", instruction) for path in paths)
+    )
     operations = [name for name, pattern in OPERATIONS.items() if re.search(pattern, instruction, re.I)]
     complexity = (
         int(len(instruction) > 650)
@@ -117,6 +126,7 @@ def features_for(task, workspace):
     return {
         "instruction_chars": len(instruction), "files_seen": count, "file_bytes_seen": total_bytes,
         "file_types": sorted(suffixes), "scan_limited": scanned >= SCAN_LIMIT,
+        "all_files_named": paths_named,
         "operations": operations, "complexity": complexity,
     }
 

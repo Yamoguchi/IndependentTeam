@@ -1,5 +1,8 @@
 """Bounded tool previews and task-local access to the retained diagnostics."""
 
+import csv
+import io
+import json
 import os
 import re
 from hashlib import sha256
@@ -158,6 +161,41 @@ def diagnostic(text):
     return preview("\n".join(lines[-12:]), deduplicate=True)
 
 
+def table_preview(text, delimiter):
+    """Describe a complete, rectangular CSV without exposing every row."""
+    rows = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
+    headers = next(rows, [])
+    if not headers or len(headers) > 64 or any(not name or len(name) > 96 for name in headers):
+        return None
+    examples = []
+    missing = [0] * len(headers)
+    count = 0
+    try:
+        for row in rows:
+            if not row:
+                continue
+            if len(row) != len(headers):
+                return None
+            count += 1
+            if len(examples) < 2:
+                examples.append([clipped(value, 40) for value in row])
+            for index, value in enumerate(row):
+                missing[index] += not value.strip()
+    except csv.Error:
+        return None
+    schema = {"rows": count, "columns": headers, "blank_cells_by_column": missing}
+    result = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    if len(result.encode()) > PREVIEW_BYTES:
+        return None
+    schema["example_rows"] = examples
+    with_examples = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    return with_examples if len(with_examples.encode()) <= PREVIEW_BYTES else result
+
+
+class OutputStoreFull(ValueError):
+    """The per-task quota cannot retain another result."""
+
+
 class ToolOutputs:
     def __init__(self, trace):
         self.temporary = TemporaryDirectory(prefix="harness-output-", dir="/tmp")
@@ -165,28 +203,33 @@ class ToolOutputs:
         self.trace = trace
         self.entries = {}
         self.handles = {}
+        self.labels = {}
         self.size = 0
         self.sequence = 0
 
     def close(self):
         self.temporary.cleanup()
 
-    def remember(self, text):
+    def remember(self, text, *, label=None):
         data = text.encode("utf-8")
         fingerprint = sha256(data).digest()
         if (handle := self.handles.get(fingerprint)) is not None:
+            if label:
+                self.labels.setdefault(handle, clipped(label, 180))
             return handle, len(data), True
         if self.size + len(data) > STORE_BYTES:
-            raise ValueError("Tool output storage is full. Narrow the requested file, search or command output.")
+            raise OutputStoreFull("Tool output storage is full. Narrow the requested file, search or command output.")
         self.sequence += 1
         handle = f"out-{self.sequence}"
         (self.root / handle).write_bytes(data)
         self.entries[handle] = (fingerprint, len(data))
         self.handles[fingerprint] = handle
+        if label:
+            self.labels[handle] = clipped(label, 180)
         self.size += len(data)
         return handle, len(data), False
 
-    def compact(self, tool, output):
+    def compact(self, tool, output, *, delimiter=None, label=None):
         status, _, body = output.partition("\n")
         python = tool in {"run_python", "run_python_file"}
         if not python:
@@ -198,7 +241,7 @@ class ToolOutputs:
         # console previews. Preserve exact short results unless duplicated.
         if not test and not body:
             return output
-        handle, size, repeated = self.remember(body)
+        handle, size, repeated = self.remember(body, label=label)
         locator = f"[Details {handle}, {size} UTF-8 bytes]"
         if test:
             outcome = "failed" if not code or code[1] != "0" else "passed" if summary else "unknown"
@@ -216,6 +259,11 @@ class ToolOutputs:
             visible = ""
         elif python and code and code[1] != "0":
             visible = diagnostic(body)
+        elif delimiter and size > PREVIEW_BYTES:
+            try:
+                visible = table_preview(body, delimiter) or preview(body)
+            except csv.Error:
+                visible = preview(body)
         else:
             visible = preview(body, deduplicate=python)
         if not test and not repeated and visible == body:
@@ -229,20 +277,33 @@ class ToolOutputs:
         return result
 
     def details(self, handle, span):
+        if handle == "index":
+            listing = "\n".join(
+                f"{key} {self.labels.get(key, 'output')} ({size} bytes)"
+                for key, (_, size) in self.entries.items()
+            ).encode()
+            if not listing:
+                return "No retained outputs."
+            start, end = self.byte_range(span, len(listing))
+            return f"index bytes {start}:{end}/{len(listing)}\n{listing[start:end].decode(errors='replace')}"
         if handle not in self.entries:
             raise ValueError("Unknown or expired output id. Rerun its tool to capture a fresh result.")
         path = self.root / handle
         _, size = self.entries[handle]
         if span == "diagnostic":
             return f"{handle} diagnostic:\n{diagnostic(path.read_text(encoding='utf-8'))}"
+        start, end = self.byte_range(span, size)
+        with path.open("rb") as file:
+            file.seek(start)
+            data = file.read(end - start)
+        return f"{handle} bytes {start}:{end}/{size}\n{data.decode(errors='replace')}"
+
+    @staticmethod
+    def byte_range(span, size):
         match = re.fullmatch(r"(\d{1,9}):(\d{1,9})", span)
         if not match:
             raise ValueError("Use a UTF-8 byte range such as 0:1024, or diagnostic.")
         start, end = map(int, match.groups())
         if not start < end or end - start > DETAIL_BYTES or start >= size:
             raise ValueError(f"Select up to {DETAIL_BYTES} bytes inside this {size}-byte output.")
-        end = min(end, size)
-        with path.open("rb") as file:
-            file.seek(start)
-            data = file.read(end - start)
-        return f"{handle} bytes {start}:{end}/{size}\n{data.decode(errors='replace')}"
+        return start, min(end, size)

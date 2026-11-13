@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 from contextlib import ExitStack
+from dataclasses import asdict
 from importlib.metadata import version
 from math import isfinite
 from pathlib import Path
@@ -19,6 +20,7 @@ from openjiuwen.core.common.logging.log_config import configure_log_config
 from contest_harness.agent.generation import (
     profile_limits,
 )
+from contest_harness.agent.options import SolverOptions, add_solver_options
 from contest_harness.planning.forecast import PlanningHistory
 from contest_harness.planning.routing import (
     DEFAULT_CHEAP_STEPS,
@@ -62,8 +64,8 @@ def main() -> int:
     parser.add_argument("--routing", action="store_true", help="Enable the task router.")
     parser.add_argument("--cascade", action="store_true", help="Allow at most one calibrated escalation.")
     parser.add_argument("--routing-profile", type=Path, help="Use independently measured per-type model evidence.")
-    parser.add_argument("--planner", choices=("control", "F"),
-                        help="Trace pre-run forecasts in directory order or enable task ranking and admission (F).")
+    parser.add_argument("--planner", choices=("control", "static", "F"),
+                        help="Select directory order (control), one pre-run ranking (static), or legacy planner F.")
     parser.add_argument("--early-stop", action="store_true",
                         help="Enable evidence-based stopping and deferred retries (G over F).")
     parser.add_argument("--sessions", type=int, choices=range(1, MAX_SESSIONS + 1), default=1,
@@ -80,7 +82,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--generation-limit", action="append", default=[], metavar="PROFILE=TOKENS",
-        help="Override a B+C+D limit for short, analysis, structured, code or debug.",
+        help="Override a minimal or B+C+D limit for short, analysis, structured, code or debug.",
     )
     parser.add_argument(
         "--local-budget", type=budget_tenths, metavar="TOKENS",
@@ -92,15 +94,36 @@ def main() -> int:
         help="Write detailed JSONL to a new file or to stderr with '-'.",
     )
     parser.add_argument("--results-file", type=Path, help="Append task results to a JSONL file (or set OUT).")
+    add_solver_options(parser)
     args = parser.parse_args()
     competition = args.mode is None
     if competition:
-        args.mode = "B+C+D"
-        args.routing = True
         args.direct_publish = True
-        if args.planner != "control":
-            args.planner = "F"
-            args.early_stop = True
+        legacy_requested = (
+            args.sessions > 1 or args.early_stop or args.routing or args.cascade
+            or args.routing_profile or args.planning_history or args.planner == "F"
+        )
+        if legacy_requested:
+            args.mode = "B+C+D"
+            args.routing = True
+            if args.planner != "control":
+                args.planner = "F"
+                args.early_stop = True
+        else:
+            args.mode = "minimal"
+            args.planner = args.planner or "static"
+    options = None
+    if args.mode == "minimal":
+        if (args.routing or args.cascade or args.routing_profile or args.planning_history
+                or args.early_stop or args.sessions != 1 or args.planner == "F"):
+            parser.error("Minimal mode uses one model and session. Legacy experiments require an explicit legacy --mode.")
+        try:
+            options = SolverOptions.parse(args)
+        except ValueError as error:
+            parser.error(str(error))
+    elif (args.planner == "static" or args.feature or args.max_iterations or args.repeat_limit is not None
+          or args.sequence_limit is not None or args.cache_entries is not None):
+        parser.error("Static ordering and solver optimization switches require --mode minimal.")
     if args.sessions > 1 or args.early_stop:
         if args.planner == "control":
             parser.error("Multiple sessions and early stopping require planner F.")
@@ -111,12 +134,6 @@ def main() -> int:
         **dotenv_values(ROOT / ".env", interpolate=False),
         **os.environ,
     }
-    if competition:
-        if args.routing_profile is None and config.get("HARNESS_ROUTING_PROFILE"):
-            args.routing_profile = Path(config["HARNESS_ROUTING_PROFILE"])
-        if args.planning_history is None and config.get("HARNESS_PLANNING_HISTORY"):
-            args.planning_history = Path(config["HARNESS_PLANNING_HISTORY"])
-        args.cascade = args.cascade or args.routing_profile is not None
     if args.local_budget is None and config.get("HARNESS_TOKEN_BUDGET"):
         try:
             args.local_budget = budget_tenths(config["HARNESS_TOKEN_BUDGET"])
@@ -148,8 +165,9 @@ def main() -> int:
 
     if model_name not in PROFILES:
         parser.error("LLM_MODEL must be one of " + ", ".join(sorted(PROFILES)))
-    if args.generation_limit and args.mode != "B+C+D":
-        parser.error("--generation-limit requires --mode B+C+D.")
+    output_control = args.mode == "B+C+D" or (options is not None and options.features["output_control_enabled"])
+    if args.generation_limit and not output_control:
+        parser.error("--generation-limit requires enabled output control.")
     if (args.cascade or args.routing_profile or args.cascade_lambda != DEFAULT_LAMBDA
             or args.cheap_steps != DEFAULT_CHEAP_STEPS) and not args.routing:
         parser.error("Routing options require --routing.")
@@ -177,7 +195,7 @@ def main() -> int:
         TaskRouter(model_name, profiles, args.cascade, args.cascade_lambda, args.cheap_steps) if args.routing else None
     )
     generation_limits = None
-    if args.mode == "B+C+D":
+    if output_control:
         try:
             generation_limits = profile_limits(args.generation_limit, PROFILES[model_name][0])
         except ValueError as error:
@@ -221,16 +239,22 @@ def main() -> int:
                 sdk_version=version("openjiuwen"),
                 python=sys.version.split()[0],
                 platform=sys.platform,
-                max_steps=MAX_STEPS,
+                max_steps=MAX_STEPS if options is None else None,
                 cheap_max_steps=args.cheap_steps if args.routing else None,
-                task_order="priority" if args.planner == "F" else "directory_name",
+                task_order="priority" if args.planner in {"F", "static"} else "directory_name",
                 planner=args.planner,
                 early_stop=args.early_stop,
                 sessions=args.sessions,
                 run_timeout_seconds=args.run_timeout,
                 mode=args.mode,
-                context_policy="task_state" if args.mode == "B" or args.mode in COMPACT_MODES else "full_history",
-                tool_output_policy="compact" if args.mode in COMPACT_MODES else "original",
+                context_policy="task_state" if (args.mode == "B" or args.mode in COMPACT_MODES
+                    or options and options.features["context_management_enabled"]) else "full_history",
+                tool_output_policy=(
+                    "by_task_type" if options and options.features["tool_output_reduction_enabled"] is None else
+                    "compact" if (args.mode in COMPACT_MODES or options and options.compact_output("data_analysis")) else
+                    "original"
+                ),
+                solver_options=asdict(options) if options is not None else None,
                 generation_limits=generation_limits,
                 direct_publish=args.direct_publish,
                 routing=args.routing,
@@ -252,7 +276,7 @@ def main() -> int:
                 model, model_name, root, trace, args.mode, generation_limits,
                 direct_publish=args.direct_publish, router=router, models=models,
                 planner=args.planner, history=history, sessions=args.sessions, run_timeout=args.run_timeout,
-                early_stop=args.early_stop, result_stream=result_stream,
+                early_stop=args.early_stop, result_stream=result_stream, options=options,
             )))
         except ValueError as error:
             parser.error(str(error))

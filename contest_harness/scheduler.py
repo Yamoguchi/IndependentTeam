@@ -1,6 +1,7 @@
 """Schedule task sessions under the shared deadline and proxy budget."""
 
 import asyncio
+import fcntl
 import json
 import os
 from dataclasses import asdict
@@ -10,7 +11,7 @@ from time import monotonic
 from contest_harness.agent.recovery import Recovery
 from contest_harness.agent.solve import run_task
 from contest_harness.planning.admission import check_admission, skipped_resolution
-from contest_harness.planning.feasibility import resolve
+from contest_harness.planning.feasibility import Resolution, resolve
 from contest_harness.planning.preflight import prepare_plan
 from contest_harness.planning.retry import prepare_retry
 from contest_harness.settings import MAX_SESSIONS, RUN_TIMEOUT
@@ -29,7 +30,7 @@ def emit(event: dict) -> None:
 async def run(
     model, model_name: str, root: Path, trace: RunTrace, mode: str = "baseline", generation_limits=None,
     *, direct_publish=False, router=None, models=None, planner=None, history=None, sessions=1, run_timeout=RUN_TIMEOUT,
-    early_stop=False, result_stream=None,
+    early_stop=False, result_stream=None, options=None,
 ) -> int:
     if not 1 <= sessions <= MAX_SESSIONS:
         raise ValueError(f"--sessions must be between 1 and {MAX_SESSIONS}.")
@@ -93,7 +94,7 @@ async def run(
                 admission = check_admission(
                     plan, required, remaining, budget["in_flight_tenths"],
                     ranked=planner == "F", proxy_blocked=proxy_blocked,
-                    allow_local_after_proxy_failure=sessions > 1 or early_stop, active=bool(active),
+                    allow_local_after_proxy_failure=sessions > 1 or early_stop or options is not None, active=bool(active),
                 )
                 if admission.wait:
                     continue
@@ -115,8 +116,10 @@ async def run(
                         record_resolution(task_dir, plan.task_id, retry.resolution, retry.current.usage.report())
                         continue
                     skipped += 1
-                    if planner == "F":
+                    if planner == "F" or options is not None:
                         resolution = skipped_resolution(plan, reason, required, remaining)
+                        if options is not None and plan.prerequisite_stop:
+                            resolution = Resolution("NEED_MORE_INFO", resolution.reason, resolution.evidence)
                         record_resolution(task_dir, plan.task_id, resolution, Usage().report())
                     continue
             del pending[planned_index]
@@ -163,14 +166,14 @@ async def run(
                             model, task_dir, current, trace, mode, generation_limits,
                             direct_publish=direct_publish, router=router, models=models,
                             plan=plan, use_planned_route=planner == "F", recovery=recovery,
-                            retry_query=retry.query if retry else None,
+                            retry_query=retry.query if retry else None, options=options,
                         )
                         if event["status"] == "proxy_error":
                             proxy_failed = True
                             proxy_failures.add(task_dir)
                             consecutive_proxy_errors += 1
                             proxy_blocked |= (
-                                (sessions == 1 and not early_stop)
+                                (sessions == 1 and not early_stop and options is None)
                                 or event.get("http_status") in (STOP_PROXY_STATUSES - {429} if early_stop else STOP_PROXY_STATUSES)
                                 or consecutive_proxy_errors >= MAX_CONSECUTIVE_PROXY_ERRORS
                             )
@@ -189,7 +192,7 @@ async def run(
                         submitted += event["status"] == "submitted"
                         if retry:
                             event["seconds"] = round(retry.seconds + event["seconds"], 3)
-                        if planner == "F":
+                        if planner == "F" or options is not None:
                             progress = recovery.progress if recovery else None
                             evidence = {key: event[key] for key in ("error_type", "http_status") if key in event}
                             if progress and progress.context:
@@ -213,9 +216,14 @@ async def run(
                                          deferred_retry=will_retry)
                         task_event = {**event, "session_id": session_id, "task_index": current.index}
                         if result_stream is not None:
-                            result_stream.write(json.dumps({"run_id": trace.run_id, **task_event}, ensure_ascii=True) + "\n")
-                            result_stream.flush()
-                            os.fsync(result_stream.fileno())
+                            descriptor = result_stream.fileno()
+                            fcntl.flock(descriptor, fcntl.LOCK_EX)
+                            try:
+                                result_stream.write(json.dumps({"run_id": trace.run_id, **task_event}, ensure_ascii=True) + "\n")
+                                result_stream.flush()
+                                os.fsync(descriptor)
+                            finally:
+                                fcntl.flock(descriptor, fcntl.LOCK_UN)
                         emit(task_event)
                         trace.emit(
                             "task.finished",
@@ -230,7 +238,7 @@ async def run(
         if planner:
             plans = prepare_plan(
                 tasks, model_name, trace, mode, generation_limits, direct_publish, router, planner, history,
-                early_stop,
+                early_stop, options=options,
             )
             queue = [(plan.directory, plan) for plan in plans]
         else:
